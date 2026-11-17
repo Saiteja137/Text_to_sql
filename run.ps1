@@ -19,7 +19,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $projectRoot ".env"))) {
     throw "Missing .env. Copy .env.example to .env and configure it before starting."
 }
 
-& $python -c "import fastapi, langgraph, langchain_ollama, sqlglot, uvicorn"
+& $python -c "import fastapi, langgraph, openai, sqlglot, uvicorn"
 if ($LASTEXITCODE -ne 0) {
     throw "Backend dependencies are missing. Run: .\.venv\Scripts\python.exe -m pip install -r requirements.txt"
 }

@@ -20,7 +20,7 @@ if [[ ! -d "$ROOT_DIR/frontend/node_modules" ]]; then
   echo "Frontend dependencies are missing. Run: npm --prefix frontend install" >&2
   exit 1
 fi
-if ! "$PYTHON_BIN" -c "import fastapi, langgraph, langchain_ollama, sqlglot, uvicorn" >/dev/null 2>&1; then
+if ! "$PYTHON_BIN" -c "import fastapi, langgraph, openai, sqlglot, uvicorn" >/dev/null 2>&1; then
   echo "Backend dependencies are missing. Install requirements.txt in the selected Python environment." >&2
   exit 1
 fi

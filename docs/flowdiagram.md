@@ -12,7 +12,7 @@ flowchart TD
     TRACK --> SCHEMA["Read SQLite tables, columns, and foreign keys"]
     SCHEMA --> LOADERR{"Schema read failed?"}
     LOADERR -- Yes --> FAIL["Record failure; show it in tracker"]
-    LOADERR -- No --> GEN["LangGraph: one Ollama request generates SQL and self-checks relevance"]
+    LOADERR -- No --> GEN["LangGraph: one OpenAI request generates SQL and self-checks relevance"]
     GEN --> RELEVANT{"Relevant and answerable?"}
     RELEVANT -- No --> RETRY{"Attempts remaining? maximum 3"}
     RELEVANT -- Yes --> VALIDATE["Validate one read-only SELECT with SQLGlot and SQLite EXPLAIN / authorizer"]
@@ -65,8 +65,8 @@ flowchart TD
    background workflow. A second question gets HTTP 429 while that run is active.
 2. **Read the schema.** The app reads table and column information and foreign
    keys from `college.db`. It gives this schema and the question to the model;
-   it does not send the database's rows to Ollama.
-3. **Generate, evaluate, and validate.** Each Ollama request returns SQL plus a
+   it does not send the database's rows to OpenAI.
+3. **Generate, evaluate, and validate.** Each OpenAI request returns SQL plus a
    relevance self-check in the same response. If the question is not answerable,
    or the SQL fails local validation, LangGraph retries with the feedback. There
    are at most three total generation requests. SQLGlot and SQLite independently
@@ -98,7 +98,7 @@ For the question **“What is the average salary of employees in the AI departme
 
 1. The schema tells the model which employee salary and department fields exist
    and how those tables relate.
-2. Ollama proposes a `SELECT` that calculates the average salary for the matching
+2. OpenAI proposes a `SELECT` that calculates the average salary for the matching
    department and returns its relevance assessment.
 3. The app checks the SQL locally. If it is unsafe, invalid, or judged irrelevant,
    it retries (up to three model calls total).

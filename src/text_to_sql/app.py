@@ -39,7 +39,7 @@ from .approvals import (
 )
 from .database import get_schema
 from .langgraph_workflow import GenerationError, run_sql_workflow
-from .ollama_client import OllamaClient, OllamaError
+from .openai_client import OpenAIClient, OpenAIClientError
 from .tracking import (
     TrackingAgent,
     create_tracking_run,
@@ -101,9 +101,9 @@ def create_app(test_config: dict[str, Any] | None = None) -> FastAPI:
     settings: dict[str, Any] = {
         "DATABASE_PATH": configured_path("DATABASE_PATH", "data/college.db"),
         "APPROVAL_DB_PATH": configured_path("APPROVAL_DB_PATH", "data/approvals.db"),
-        "OLLAMA_BASE_URL": os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
-        "OLLAMA_MODEL": os.getenv("OLLAMA_MODEL", "llama3.2:1b"),
-        "OLLAMA_TIMEOUT_SECONDS": _float_setting("OLLAMA_TIMEOUT_SECONDS", 120, 1, 120),
+        "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY", ""),
+        "OPENAI_MODEL": os.getenv("OPENAI_MODEL", "gpt-6-luna"),
+        "OPENAI_TIMEOUT_SECONDS": _float_setting("OPENAI_TIMEOUT_SECONDS", 120, 1, 120),
         "MAX_GENERATION_ATTEMPTS": _integer_setting("MAX_GENERATION_ATTEMPTS", 3, 1, 3),
         "QUERY_TIMEOUT_SECONDS": float(os.getenv("QUERY_TIMEOUT_SECONDS", "5")),
         "MAX_RESULT_ROWS": _integer_setting("MAX_RESULT_ROWS", 200, 1, 5000),
@@ -152,7 +152,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> FastAPI:
         title="College Text-to-SQL API",
         version="2.0.0",
         description=(
-            "LangGraph and Ollama text-to-SQL with read-only SQLite and configurable "
+            "LangGraph and OpenAI text-to-SQL with read-only SQLite and configurable "
             "human approval."
         ),
         lifespan=lifespan,
@@ -184,14 +184,14 @@ def create_app(test_config: dict[str, Any] | None = None) -> FastAPI:
                 database_path=str(settings["DATABASE_PATH"]),
                 max_attempts=settings["MAX_GENERATION_ATTEMPTS"],
                 query_timeout_seconds=settings["QUERY_TIMEOUT_SECONDS"],
-                client=OllamaClient(
-                    settings["OLLAMA_BASE_URL"],
-                    settings["OLLAMA_MODEL"],
-                    settings["OLLAMA_TIMEOUT_SECONDS"],
+                client=OpenAIClient(
+                    settings["OPENAI_API_KEY"],
+                    settings["OPENAI_MODEL"],
+                    settings["OPENAI_TIMEOUT_SECONDS"],
                 ),
                 tracker=tracker,
             )
-        except (GenerationError, OllamaError, OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+        except (GenerationError, OpenAIClientError, OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
             logger.error("Query workflow failed run_id=%s error=%s", run_id, exc)
             tracker.record("workflow", "failed", f"Workflow stopped: {exc}")
             return

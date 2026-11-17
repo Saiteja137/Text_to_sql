@@ -325,7 +325,7 @@ function Dashboard() {
         </section>
       </div>
       <details className="panel schema-panel"><summary>Explore database schema</summary><pre>{schema || "Loading schema…"}</pre></details>
-      <footer>FastAPI · React + TypeScript · LangChain · LangGraph · Ollama · SQLite</footer>
+      <footer>FastAPI · React + TypeScript · LangGraph · OpenAI · SQLite</footer>
     </main>
   );
 }

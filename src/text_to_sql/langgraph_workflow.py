@@ -9,7 +9,7 @@ from typing import TypedDict
 from langgraph.graph import END, StateGraph
 
 from .database import get_schema
-from .ollama_client import OllamaClient, OllamaError
+from .openai_client import OpenAIClient, OpenAIClientError
 from .sql_safety import SqlValidationError, validate_read_only_sql
 from .tracking import TrackingAgent
 
@@ -41,7 +41,7 @@ def run_sql_workflow(
     database_path: str,
     max_attempts: int,
     query_timeout_seconds: float,
-    client: OllamaClient,
+    client: OpenAIClient,
     tracker: TrackingAgent,
 ) -> tuple[str, int, str]:
     path = database_path
@@ -77,7 +77,7 @@ def run_sql_workflow(
         tracker.record(
             "generation",
             "running",
-            "Sending one Ollama request to generate and self-check SQL.",
+            "Sending one OpenAI request to generate and self-check SQL.",
             attempt=attempt,
         )
         started = time.monotonic()
@@ -85,7 +85,7 @@ def run_sql_workflow(
             generated = client.generate_and_evaluate(
                 state["question"], state["schema"], state["sql"], state["feedback"]
             )
-        except OllamaError as exc:
+        except OpenAIClientError as exc:
             logger.error(
                 "SQL generation and relevance check failed attempt=%s "
                 "elapsed_seconds=%.1f error=%s",
@@ -97,7 +97,7 @@ def run_sql_workflow(
             raise
         elapsed = time.monotonic() - started
         logger.info(
-            "Combined Ollama response received attempt=%s relevant=%s "
+            "Combined OpenAI response received attempt=%s relevant=%s "
             "elapsed_seconds=%.1f sql_characters=%s",
             attempt,
             generated.relevant,
@@ -217,8 +217,8 @@ def run_sql_workflow(
     }
     try:
         state = graph.compile().invoke(initial_state)
-    except OllamaError as exc:
-        logger.error("LangGraph workflow could not complete its Ollama request: %s", exc)
+    except OpenAIClientError as exc:
+        logger.error("LangGraph workflow could not complete its OpenAI request: %s", exc)
         raise
     if not state["relevant"] or state["exhausted"]:
         raise GenerationError(

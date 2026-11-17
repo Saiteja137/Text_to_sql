@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import asyncio
 from email.message import EmailMessage
 import sqlite3
 import tempfile
 import time
 import unittest
-from collections.abc import AsyncIterator
 from contextlib import closing
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -28,9 +26,7 @@ from text_to_sql.approvals import (
 from text_to_sql.app import create_app
 from text_to_sql.database import initialize_database
 from text_to_sql.langgraph_workflow import GenerationError, run_sql_workflow
-from ollama import ResponseError
-
-from text_to_sql.ollama_client import GeneratedQuery, OllamaClient, OllamaError
+from text_to_sql.openai_client import GeneratedQuery, OpenAIClient, OpenAIClientError
 from text_to_sql.sql_safety import SqlValidationError, validate_read_only_sql
 from text_to_sql.tracking import (
     TrackingAgent,
@@ -60,18 +56,6 @@ class FakeSMTP:
         self.message = message
 
 
-class FakeStreamingChain:
-    def __init__(self, chunks: list[str], delay_seconds: float = 0) -> None:
-        self.chunks = chunks
-        self.delay_seconds = delay_seconds
-
-    async def astream(self, _messages: object) -> AsyncIterator[str]:
-        for chunk in self.chunks:
-            if self.delay_seconds:
-                await asyncio.sleep(self.delay_seconds)
-            yield chunk
-
-
 class FakeIMAP:
     def __init__(self, raw_message: bytes) -> None:
         self.raw_message = raw_message
@@ -89,7 +73,7 @@ class FakeIMAP:
         return "OK", [b"LOGOUT completed"]
 
 
-class FakeOllama:
+class FakeOpenAI:
     def __init__(
         self,
         sql_responses: list[str],
@@ -164,64 +148,42 @@ class ApplicationTests(unittest.TestCase):
             with self.subTest(sql=sql), self.assertRaises(SqlValidationError):
                 validate_read_only_sql(sql, self.database_path)
 
-    def test_missing_ollama_model_reports_actionable_error(self) -> None:
-        fake_chat = MagicMock()
-        fake_chat.__or__.return_value.astream.side_effect = ResponseError(
-            "model 'llama3.1:8b' not found", status_code=404
-        )
-        with patch("text_to_sql.ollama_client.ChatOllama", return_value=fake_chat):
-            client = OllamaClient("http://localhost:11434", "llama3.1:8b")
-            with self.assertRaisesRegex(OllamaError, "ollama pull <model>"):
-                client.generate_and_evaluate("Show employees", "employees schema")
+    def test_missing_openai_key_reports_actionable_error(self) -> None:
+        with self.assertRaisesRegex(OpenAIClientError, "OPENAI_API_KEY is missing"):
+            OpenAIClient("", "gpt-6-luna")
 
-    def test_ollama_memory_error_recommends_a_smaller_model(self) -> None:
-        fake_chat = MagicMock()
-        fake_chat.__or__.return_value.astream.side_effect = ResponseError(
-            "error loading model: unable to allocate CPU buffer", status_code=500
+    def test_generation_returns_sql_and_relevance_in_one_openai_call(self) -> None:
+        fake_sdk = MagicMock()
+        fake_sdk.responses.create.return_value.output_text = (
+            '{"sql":"SELECT COUNT(*) FROM employees",'
+            '"relevant":true,"reason":"Counts employees."}'
         )
-        with patch("text_to_sql.ollama_client.ChatOllama", return_value=fake_chat):
-            client = OllamaClient("http://localhost:11434", "llama3.1:8b")
-            with self.assertRaisesRegex(
-                OllamaError, "pulling it again will not free memory"
-            ):
-                client.generate_and_evaluate("Show employees", "employees schema")
-
-    def test_generation_returns_sql_and_relevance_in_one_ollama_call(self) -> None:
-        fake_chat = MagicMock()
-        fake_chain = FakeStreamingChain(
-            [
-                '{"sql":"SELECT COUNT(*) FROM employees",',
-                '"relevant":true,',
-                '"reason":"Counts employees."}',
-            ]
-        )
-        fake_chat.__or__.return_value = fake_chain
-        with patch("text_to_sql.ollama_client.ChatOllama", return_value=fake_chat):
-            client = OllamaClient("http://localhost:11434", "llama3.1:8b")
+        fake_sdk.responses.create.return_value._request_id = "req_test"
+        with patch("text_to_sql.openai_client.OpenAI", return_value=fake_sdk):
+            client = OpenAIClient("test-key", "gpt-6-luna")
             generated = client.generate_and_evaluate(
                 "How many employees are there?", "employees schema"
             )
         self.assertEqual(generated.sql, "SELECT COUNT(*) FROM employees")
         self.assertTrue(generated.relevant)
+        fake_sdk.responses.create.assert_called_once()
+        request = fake_sdk.responses.create.call_args.kwargs
+        self.assertEqual(request["model"], "gpt-6-luna")
+        self.assertEqual(request["text"]["format"]["type"], "json_schema")
+        self.assertFalse(request["store"])
 
-    def test_ollama_request_has_a_hard_timeout(self) -> None:
+    def test_openai_request_has_a_hard_timeout(self) -> None:
         with self.assertRaisesRegex(ValueError, "between 1 and 120"):
-            OllamaClient(
-                "http://localhost:11434", "llama3.1:8b", timeout_seconds=121
-            )
-        fake_chat = MagicMock()
-        fake_chat.__or__.return_value = FakeStreamingChain(["late response"], 2)
-        with patch("text_to_sql.ollama_client.ChatOllama", return_value=fake_chat):
-            client = OllamaClient(
-                "http://localhost:11434", "llama3.1:8b", timeout_seconds=1
-            )
-            with self.assertRaisesRegex(OllamaError, "exceeded its 1-second limit"):
-                client._invoke("system", "user", operation="test")
+            OpenAIClient("test-key", "gpt-6-luna", timeout_seconds=121)
+        with patch("text_to_sql.openai_client.OpenAI") as sdk:
+            OpenAIClient("test-key", "gpt-6-luna", timeout_seconds=1)
+        self.assertEqual(sdk.call_args.kwargs["timeout"], 1)
+        self.assertEqual(sdk.call_args.kwargs["max_retries"], 0)
 
     def test_langgraph_retries_semantic_evaluation_failure(self) -> None:
         run_id = "semantic-retry"
         create_tracking_run(self.approval_path, run_id)
-        client = FakeOllama(
+        client = FakeOpenAI(
             ["SELECT COUNT(*) FROM students", "SELECT AVG(salary) FROM employees"],
             [
                 (False, "The question asks about employee salary."),
@@ -251,7 +213,7 @@ class ApplicationTests(unittest.TestCase):
     def test_langgraph_enforces_three_attempt_limit(self) -> None:
         run_id = "retry-limit"
         create_tracking_run(self.approval_path, run_id)
-        client = FakeOllama(["DELETE FROM employees"] * 3, [])
+        client = FakeOpenAI(["DELETE FROM employees"] * 3, [])
         with self.assertRaisesRegex(GenerationError, "after 3 attempt"):
             run_sql_workflow(
                 question="Show employees",
@@ -442,14 +404,14 @@ class ApplicationTests(unittest.TestCase):
             }
         )
         sql = "SELECT COUNT(*) AS employee_count FROM employees"
-        client = FakeOllama([sql], [(True, "Counts employees.")])
+        client = FakeOpenAI([sql], [(True, "Counts employees.")])
         emailed: dict[str, object] = {}
 
         def capture_email(**kwargs: object) -> None:
             emailed.update(kwargs)
 
         with (
-            patch("text_to_sql.app.OllamaClient", return_value=client),
+            patch("text_to_sql.app.OpenAIClient", return_value=client),
             patch("text_to_sql.app.send_approval_email", side_effect=capture_email),
             patch("text_to_sql.app.open_approval_inbox", return_value=FakeIMAP(b"")),
             patch("text_to_sql.app.find_approval_reply", return_value=None),
@@ -526,12 +488,12 @@ class ApplicationTests(unittest.TestCase):
                 "CORS_ORIGINS": ["http://localhost:5173"],
             }
         )
-        client = FakeOllama(
+        client = FakeOpenAI(
             ["SELECT COUNT(*) AS employee_count FROM employees"],
             [(True, "Counts employees.")],
         )
         with (
-            patch("text_to_sql.app.OllamaClient", return_value=client),
+            patch("text_to_sql.app.OpenAIClient", return_value=client),
             patch("text_to_sql.app.send_approval_email"),
             patch("text_to_sql.app.open_approval_inbox", return_value=FakeIMAP(b"")),
             patch(
@@ -580,12 +542,12 @@ class ApplicationTests(unittest.TestCase):
                 "CORS_ORIGINS": ["http://localhost:5173"],
             }
         )
-        client = FakeOllama(
+        client = FakeOpenAI(
             ["SELECT COUNT(*) AS employee_count FROM employees"],
             [(True, "Counts employees.")],
         )
         with (
-            patch("text_to_sql.app.OllamaClient", return_value=client),
+            patch("text_to_sql.app.OpenAIClient", return_value=client),
             patch(
                 "text_to_sql.app.send_approval_email",
                 side_effect=AssertionError("email must not be sent when approval is disabled"),
@@ -622,12 +584,12 @@ class ApplicationTests(unittest.TestCase):
                 "CORS_ORIGINS": ["http://localhost:5173"],
             }
         )
-        client = FakeOllama(
+        client = FakeOpenAI(
             ["SELECT COUNT(*) FROM employees"],
             [(True, "Counts employees.")],
             delay_seconds=0.25,
         )
-        with patch("text_to_sql.app.OllamaClient", return_value=client), TestClient(test_app) as web:
+        with patch("text_to_sql.app.OpenAIClient", return_value=client), TestClient(test_app) as web:
             first = web.post("/api/query", json={"question": "Count employees"})
             self.assertEqual(first.status_code, 202)
             second = web.post("/api/query", json={"question": "Count students"})
